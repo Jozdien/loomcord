@@ -3,6 +3,7 @@ from discord.ext import commands
 import openai
 import tiktoken
 from api_details import api_base, api_key
+import json
 
 with open("discord-token.txt", "r") as f:
     DISCORD_TOKEN = f.read().strip()
@@ -15,13 +16,23 @@ intents.reactions = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 CONTEXT_WINDOW = 8000
-ARG_LIST = {"--loom-server": 0, "--exclude-names": False}
+ARG_LIST = {
+    "--loom-server": 0,
+    "--exclude-names": False,
+    "--num_children": 5,
+    "--max_tokens": 50,
+    "--temperature": 0.7,
+    }
+MODEL_ARGS = ["--num_children", "--max_tokens", "--temperature"]
+
+
 
 @bot.event
 async def on_message(message):
     if bot.user.mentioned_in(message) and message.author != bot.user:
         content = message.content.replace(f'<@{bot.user.id}>', '').strip()
         arg_values, content = check_arguments(content, ARG_LIST)
+        model_args = get_model_args(arg_values)
         stop_sequences = None
 
         if arg_values["--loom-server"]:
@@ -34,59 +45,87 @@ async def on_message(message):
         else:
             content = await read_attachments(message, content)
 
-        content, num_tokens = context_window(content, CONTEXT_WINDOW-50, encoding_name="gpt2")
+        content, num_tokens = context_window(content,
+                                             CONTEXT_WINDOW - model_args["--max_tokens"],
+                                             encoding_name="gpt2")
         print(f"Number of tokens: {num_tokens}")
 
-        continuations = get_gpt3_continuations(content, stop_sequences=stop_sequences)
+        continuations = get_gpt3_continuations(content, model_args, stop_sequences=stop_sequences)
         embeds, view = create_components(continuations)
 
-        if len(content) > 2000:
+        persist_args = persist_args_string(model_args)
+
+        if len(content) + len(persist_args) > 2000:
             with open("response.txt", "w") as response_file:
                 response_file.write(content)
             with open("response.txt", "rb") as response_file:
-                await message.reply(content='', embeds=embeds, view=view, file=discord.File(response_file), mention_author=False)
+                await message.reply(content='' + persist_args, embeds=embeds, view=view,
+                                    file=discord.File(response_file),
+                                    mention_author=False)
         else:
-            await message.reply(content, embeds=embeds, view=view)
+            await message.reply(content + persist_args, embeds=embeds, view=view)
 
 @bot.event
 async def on_interaction(interaction):
     if isinstance(interaction, discord.Interaction) and interaction.data['component_type'] == 2:  # Corresponds to button click
         await interaction.response.defer()  # necessary to show interaction hasn't failed
         option_selected = int(interaction.data["custom_id"])
-        original_content = await read_attachments(interaction.message, interaction.message.content)
+        partial_content, model_args = read_persist_args(interaction.message.content)
+        original_content = await read_attachments(interaction.message, partial_content)
         content = f'{original_content}{interaction.message.embeds[option_selected].fields[0].value}'
-        content, num_tokens = context_window(content, CONTEXT_WINDOW-50, encoding_name="gpt2")
+        content, num_tokens = context_window(content,
+                                             CONTEXT_WINDOW-model_args["--max_tokens"],
+                                             encoding_name="gpt2")
         print(f"Number of tokens: {num_tokens}")
 
-        continuations = get_gpt3_continuations(content)
+        continuations = get_gpt3_continuations(content, model_args)
 
         embeds, view = create_components(continuations)
 
-        if len(content) > 2000:
+        persist_args = persist_args_string(model_args)
+
+        if len(content) + len(persist_args) > 2000:
             with open("response.txt", "w") as response_file:
                 response_file.write(content)
             with open("response.txt", "rb") as response_file:
-                await interaction.message.reply(content='', embeds=embeds, view=view, file=discord.File(response_file), mention_author=False)
+                await interaction.message.reply(content='' + persist_args, embeds=embeds, view=view, file=discord.File(response_file), mention_author=False)
         else:
-            await interaction.message.reply(content, embeds=embeds, view=view, mention_author=False)
+            await interaction.message.reply(content + persist_args, embeds=embeds, view=view, mention_author=False)
 
-def get_gpt3_continuations(prompt, stop_sequences=None):
+def persist_args_string(model_args):
+    args = json.dumps(model_args)
+    return f"\n```===settings===\n{args}```"
+
+def read_persist_args(content):
+    separator = "\n```===settings==="
+    if separator in content:
+        content_end_idx = content.index(separator)
+        start_idx = content.index(separator) + len(separator) + 1
+        args = json.loads(content[start_idx:].replace("```", ""))
+        return content[:content_end_idx], args
+    return content, {a: ARG_LIST[a] for a in MODEL_ARGS}
+
+def get_model_args(arg_values):
+    return {a: arg_values[a] for a in MODEL_ARGS}
+
+def get_gpt3_continuations(prompt, model_args, stop_sequences=None):
     response = openai.Completion.create(
         model="code-davinci-002",
         prompt=prompt,
-        max_tokens=50,
-        n=5,
+        max_tokens=model_args["--max_tokens"],
+        n=model_args["--num_children"],
         stop=stop_sequences,
-        temperature=0.7,
+        temperature=model_args["--temperature"],
     )
 
     continuations = [choice.text for choice in response.choices]
+    # continuations = [str(i) for i in range(model_args["--num_children"])]
     return continuations
 
 def check_arguments(input_string, arg_list):
     parts = input_string.split()
     arg_values = arg_list.copy()
-    
+
     index = 0
     while index < len(parts):
         if parts[index] == "--loom-server":
@@ -96,6 +135,16 @@ def check_arguments(input_string, arg_list):
             arg_values["--exclude-names"] = True
             index += 1
             continue
+        if index + 1 < len(parts):
+            print(parts[index])
+            if parts[index] in ["--num_children", "-n"]:
+                arg_values["--num_children"] = int(parts[index+1])
+            elif parts[index] in ["--max_tokens", "-m"]:
+                arg_values["--max_tokens"] = int(parts[index+1])
+            elif parts[index] in ["--temperature", "-t"]:
+                arg_values["--temperature"] = float(parts[index+1])
+            index += 2
+
         if index >= len(parts) or parts[index] not in arg_list:
             break
 
