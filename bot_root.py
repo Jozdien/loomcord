@@ -4,6 +4,7 @@ import openai
 import tiktoken
 from api_details import api_base, api_key
 import json
+import shlex
 
 with open("discord-token.txt", "r") as f:
     DISCORD_TOKEN = f.read().strip()
@@ -22,7 +23,11 @@ ARG_LIST = {
     "--num_children": 5,
     "--max_tokens": 50,
     "--temperature": 0.7,
+    "--child_num": None,
+    "--branch": None,
+    "--append": None,
     }
+
 MODEL_ARGS = ["--num_children", "--max_tokens", "--temperature"]
 
 
@@ -30,24 +35,45 @@ MODEL_ARGS = ["--num_children", "--max_tokens", "--temperature"]
 @bot.event
 async def on_message(message):
     if bot.user.mentioned_in(message) and message.author != bot.user:
-        content = message.content.replace(f'<@{bot.user.id}>', '').strip()
-        arg_values, content = check_arguments(content, ARG_LIST)
-        model_args = get_model_args(arg_values)
         stop_sequences = None
+        if message.reference:
+            replied_to_id = message.reference.message_id
+            prev_message = await message.channel.fetch_message(replied_to_id)
+            arg_values, content = check_arguments(message.content, ARG_LIST, reply=True)
+            partial_content, model_args = read_persist_args(prev_message.content)
+            original_content = await read_attachments(prev_message, partial_content)
+            if arg_values["--child_num"] > len(prev_message.embeds):
+                await message.reply("Invalid child number.")
+                return
 
-        if arg_values["--loom-server"]:
-            last_messages = list(reversed(await get_last_n_messages(message, arg_values["--loom-server"])))
-            if not arg_values.get("--exclude-names"):
-                content = '\n---\n'.join([f"{list(d.keys())[0]}: {list(d.values())[0]}" for d in last_messages]) + "\n---\n"
-                stop_sequences = "\n---\n"
-            else:
-                content = '\n\n'.join([list(d.values())[0] for d in last_messages])
+            child_content = prev_message.embeds[arg_values["--child_num"]-1].fields[0].value
+            if arg_values["--branch"] and arg_values["--branch"] in child_content:
+                branch_idx = child_content.index(arg_values["--branch"]) + len(arg_values["--branch"])
+                child_content = child_content[:branch_idx]
+            content = f'{original_content}{child_content}'
+
+            print(arg_values["--append"])
+            if arg_values["--append"]:
+                content += " " + arg_values["--append"]
+
         else:
-            content = await read_attachments(message, content)
+            content = message.content.replace(f'<@{bot.user.id}>', '').strip()
+            arg_values, content = check_arguments(content, ARG_LIST)
+            model_args = get_model_args(arg_values)
+
+            if arg_values["--loom-server"]:
+                last_messages = list(reversed(await get_last_n_messages(message, arg_values["--loom-server"])))
+                if not arg_values.get("--exclude-names"):
+                    content = '\n---\n'.join([f"{list(d.keys())[0]}: {list(d.values())[0]}" for d in last_messages]) + "\n---\n"
+                    stop_sequences = "\n---\n"
+                else:
+                    content = '\n\n'.join([list(d.values())[0] for d in last_messages])
+            else:
+                content = await read_attachments(message, content)
 
         content, num_tokens = context_window(content,
-                                             CONTEXT_WINDOW - model_args["--max_tokens"],
-                                             encoding_name="gpt2")
+                                            CONTEXT_WINDOW - model_args["--max_tokens"],
+                                            encoding_name="gpt2")
         print(f"Number of tokens: {num_tokens}")
 
         continuations = get_gpt3_continuations(content, model_args, stop_sequences=stop_sequences)
@@ -119,14 +145,17 @@ def get_gpt3_continuations(prompt, model_args, stop_sequences=None):
     )
 
     continuations = [choice.text for choice in response.choices]
-    # continuations = [str(i) for i in range(model_args["--num_children"])]
+    # continuations = [str(i) + "asdfasdf" for i in range(model_args["--num_children"])]
     return continuations
 
-def check_arguments(input_string, arg_list):
-    parts = input_string.split()
+def check_arguments(input_string, arg_list, reply=False):
+    parts = shlex.split(input_string)
     arg_values = arg_list.copy()
 
     index = 0
+    if reply:
+        arg_values["--child_num"] = int(parts[0])
+        index += 1
     while index < len(parts):
         if parts[index] == "--loom-server":
             arg_values["--loom-server"] = int(parts[index + 1]) if index + 1 < len(parts) else 5
@@ -136,14 +165,20 @@ def check_arguments(input_string, arg_list):
             index += 1
             continue
         if index + 1 < len(parts):
-            print(parts[index])
             if parts[index] in ["--num_children", "-n"]:
                 arg_values["--num_children"] = int(parts[index+1])
             elif parts[index] in ["--max_tokens", "-m"]:
                 arg_values["--max_tokens"] = int(parts[index+1])
             elif parts[index] in ["--temperature", "-t"]:
                 arg_values["--temperature"] = float(parts[index+1])
+            elif parts[index] in ["--branch", "-b"]:
+                arg_values["--branch"] = parts[index+1]
+            elif parts[index] in ["--append", "-a"]:
+                arg_values["--append"] = parts[index+1]
+            else:
+                break
             index += 2
+            continue
 
         if index >= len(parts) or parts[index] not in arg_list:
             break
