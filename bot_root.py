@@ -134,18 +134,17 @@ def check_arguments(input_string, arg_list):
         elif parts[index] == "--exclude-names":
             arg_values["--exclude-names"] = True
             index += 1
-            continue
-        if index + 1 < len(parts):
-            print(parts[index])
+        elif index + 1 < len(parts):
             if parts[index] in ["--num_children", "-n"]:
                 arg_values["--num_children"] = int(parts[index+1])
             elif parts[index] in ["--max_tokens", "-m"]:
                 arg_values["--max_tokens"] = int(parts[index+1])
             elif parts[index] in ["--temperature", "-t"]:
                 arg_values["--temperature"] = float(parts[index+1])
+            else:
+                break
             index += 2
-
-        if index >= len(parts) or parts[index] not in arg_list:
+        else:
             break
 
     rest_of_string = " ".join(parts[index:])
