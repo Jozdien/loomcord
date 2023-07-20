@@ -27,6 +27,11 @@ ARG_LIST = {
     "--branch": None,
     "--append": None,
     }
+ARG_ABBREVS = {"-n": "--num_children",
+              "-t": "--temperature",
+              "-m": "--max_tokens",
+              "-b": "--branch",
+              "-a": "--append"}
 
 MODEL_ARGS = ["--num_children", "--max_tokens", "--temperature"]
 
@@ -39,8 +44,12 @@ async def on_message(message):
         if message.reference:
             replied_to_id = message.reference.message_id
             prev_message = await message.channel.fetch_message(replied_to_id)
-            arg_values, content = check_arguments(message.content, ARG_LIST, reply=True)
+            arg_values, user_set, content = check_arguments(message.content, ARG_LIST, reply=True)
             partial_content, model_args = read_persist_args(prev_message.content)
+            # user set arguments override inherited arguments
+            for u in user_set:
+                model_args[u] = arg_values[u]
+
             original_content = await read_attachments(prev_message, partial_content)
             if arg_values["--child_num"] > len(prev_message.embeds):
                 await message.reply("Invalid child number.")
@@ -58,7 +67,7 @@ async def on_message(message):
 
         else:
             content = message.content.replace(f'<@{bot.user.id}>', '').strip()
-            arg_values, content = check_arguments(content, ARG_LIST)
+            arg_values, _, content = check_arguments(content, ARG_LIST)
             model_args = get_model_args(arg_values)
 
             if arg_values["--loom-server"]:
@@ -151,6 +160,7 @@ def get_gpt3_continuations(prompt, model_args, stop_sequences=None):
 def check_arguments(input_string, arg_list, reply=False):
     parts = shlex.split(input_string)
     arg_values = arg_list.copy()
+    user_set = []
 
     index = 0
     if reply:
@@ -176,12 +186,16 @@ def check_arguments(input_string, arg_list, reply=False):
                 arg_values["--append"] = parts[index+1]
             else:
                 break
+            if parts[index] in ARG_ABBREVS:
+                user_set.append(ARG_ABBREVS[parts[index]])
+            else:
+                user_set.append(parts[index])
             index += 2
         else:
             break
 
     rest_of_string = " ".join(parts[index:])
-    return arg_values, rest_of_string
+    return arg_values, user_set, rest_of_string
 
 def context_window(prompt, size, encoding_name="p50k_base"):
     encoding = tiktoken.get_encoding(encoding_name)
