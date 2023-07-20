@@ -145,7 +145,7 @@ def get_gpt3_continuations(prompt, model_args, stop_sequences=None):
     )
 
     continuations = [choice.text for choice in response.choices]
-    # continuations = [str(i) + "asdfasdf" for i in range(model_args["--num_children"])]
+    # continuations = [str(i) + "test" for i in range(model_args["--num_children"])]
     return continuations
 
 def check_arguments(input_string, arg_list, reply=False):
@@ -163,8 +163,7 @@ def check_arguments(input_string, arg_list, reply=False):
         elif parts[index] == "--exclude-names":
             arg_values["--exclude-names"] = True
             index += 1
-            continue
-        if index + 1 < len(parts):
+        elif index + 1 < len(parts):
             if parts[index] in ["--num_children", "-n"]:
                 arg_values["--num_children"] = int(parts[index+1])
             elif parts[index] in ["--max_tokens", "-m"]:
@@ -178,9 +177,7 @@ def check_arguments(input_string, arg_list, reply=False):
             else:
                 break
             index += 2
-            continue
-
-        if index >= len(parts) or parts[index] not in arg_list:
+        else:
             break
 
     rest_of_string = " ".join(parts[index:])
